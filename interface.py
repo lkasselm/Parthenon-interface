@@ -692,6 +692,28 @@ class Simulation:
         self.input_file = input_files[0]
         self.config = SimulationConfig(io_utils.parse_parthenon_input(self.input_file))
         self.output_types = [cls() for cls in self._default_output_type_classes]
+        self._live_widgets = []
+
+    def close(self):
+        """Close ipywidgets created by a previous _ipython_display_ render.
+
+        Each render builds a fresh tree of Accordion/Output widgets; if the old
+        ones are never closed, their frontend comms stay registered and pile up
+        across repeated re-displays in the same kernel session, which is how a
+        notebook ends up rendering stale/duplicated widget output. Called
+        automatically at the start of _ipython_display_, but can be called
+        directly too (e.g. before deleting a Simulation you displayed).
+        """
+        def _close_recursive(w):
+            for child in getattr(w, "children", ()):
+                _close_recursive(child)
+            try:
+                w.close()
+            except Exception:
+                pass
+        for w in self._live_widgets:
+            _close_recursive(w)
+        self._live_widgets = []
 
     def _output_info(self):
         handler_map = {h.file_type: h for h in self.output_types}
@@ -752,21 +774,24 @@ class Simulation:
             df = self.history
         except Exception as e:
             return f"<em>Could not load history: {e}</em>"
+        has_redshift = "redshift" in df.columns
         cols = [c for c in df.columns if c != "time"]
+        x_axes = ["time", "redshift"] if has_redshift else ["time"]
         uid = f"hist_{abs(hash(self.directory))}"
 
         imgs = {}
         for col in cols:
-            fig = Figure(figsize=(6, 2.5))
-            ax = fig.add_subplot(111)
-            ax.plot(df["time"], df[col])
-            ax.set_xlabel("time")
-            ax.set_ylabel(col)
-            fig.tight_layout()
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=100)
-            buf.seek(0)
-            imgs[col] = base64.b64encode(buf.read()).decode()
+            for x in x_axes:
+                fig = Figure(figsize=(6, 2.5))
+                ax = fig.add_subplot(111)
+                ax.plot(df[x], df[col])
+                ax.set_xlabel(x)
+                ax.set_ylabel(col)
+                fig.tight_layout()
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png", dpi=100)
+                buf.seek(0)
+                imgs[(col, x)] = base64.b64encode(buf.read()).decode()
 
         btn_style = ("font-family:monospace;padding:3px 8px;margin:2px;"
                      "cursor:pointer;border:1px solid #ccc;border-radius:3px")
@@ -776,24 +801,53 @@ class Simulation:
                 f"var ps=document.querySelectorAll('.{uid}-plot');"
                 f"ps.forEach(function(e){{e.style.display='none'}});"
                 f"var bs=document.querySelectorAll('.{uid}-btn');"
-                f"bs.forEach(function(e){{e.style.background='#f0f0f0';e.style.color='black'}});"
-                f"document.getElementById('{uid}-{col}').style.display='block';"
+                f"bs.forEach(function(e){{e.style.background='#f0f0f0';e.style.color='black';"
+                f"e.removeAttribute('data-active');}});"
+                f"var xaEl=document.getElementById('{uid}-xaxis');"
+                f"var xv=xaEl?xaEl.value:'time';"
+                f"document.getElementById('{uid}-'+xv+'-{col}').style.display='block';"
                 f"this.style.background='#333';this.style.color='white';"
+                f"this.setAttribute('data-active','1');"
             )
             bg = "#333;color:white" if i == 0 else "#f0f0f0"
+            active_attr = " data-active='1'" if i == 0 else ""
             buttons.append(
-                f"<button class='{uid}-btn' onclick=\"{onclick}\""
+                f"<button class='{uid}-btn'{active_attr} onclick=\"{onclick}\""
                 f" style='{btn_style};background:{bg}'>{col}</button>"
             )
         images = "".join(
-            f"<div id='{uid}-{col}' class='{uid}-plot'"
-            f" style='display:{'block' if i == 0 else 'none'}'>"
-            f"<img src='data:image/png;base64,{imgs[col]}' style='max-width:600px'/></div>"
+            f"<div id='{uid}-{x}-{col}' class='{uid}-plot'"
+            f" style='display:{'block' if (i == 0 and x == 'time') else 'none'}'>"
+            f"<img src='data:image/png;base64,{imgs[(col, x)]}' style='max-width:600px'/></div>"
             for i, col in enumerate(cols)
+            for x in x_axes
         )
+
+        xaxis_selector = ""
+        if has_redshift:
+            xaxis_onchange = (
+                f"var xv=this.value;"
+                f"var active=null;"
+                f"document.querySelectorAll('.{uid}-btn').forEach(function(b)"
+                f"{{if(b.getAttribute('data-active')==='1')active=b;}});"
+                f"if(!active)return;"
+                f"var col=active.textContent;"
+                f"document.querySelectorAll('.{uid}-plot').forEach(function(e)"
+                f"{{e.style.display='none'}});"
+                f"document.getElementById('{uid}-'+xv+'-'+col).style.display='block';"
+            )
+            xaxis_selector = (
+                f"<select id='{uid}-xaxis' onchange=\"{xaxis_onchange}\" "
+                f"style='font-family:monospace;padding:3px 6px;margin:2px 12px 2px 0;"
+                f"border:1px solid #ccc;border-radius:3px'>"
+                f"<option value='time' selected>vs time</option>"
+                f"<option value='redshift'>vs redshift</option>"
+                f"</select>"
+            )
+
         return (
             f"<div>"
-            f"<div style='margin-bottom:6px'>{''.join(buttons)}</div>"
+            f"<div style='margin-bottom:6px'>{xaxis_selector}{''.join(buttons)}</div>"
             f"<div>{images}</div>"
             f"</div>"
         )
@@ -860,6 +914,8 @@ class Simulation:
         from IPython.display import display, HTML
         import ipywidgets as widgets
 
+        self.close()  # dispose of widgets from a previous render before building new ones
+
         hdr = "font-family:monospace;font-weight:bold;margin:10px 0 4px 0;color:#333"
         display(HTML(self._info_html()))
         display(HTML(f"<div style='{hdr}'>History</div>" + self._history_html()))
@@ -894,7 +950,9 @@ class Simulation:
         outputs_acc.set_title(0, 'Outputs')
         accordions.append(outputs_acc)
 
-        display(widgets.VBox(accordions))
+        vbox = widgets.VBox(accordions)
+        self._live_widgets.append(vbox)
+        display(vbox)
 
     def _repr_html_(self):
         return self._info_html() + self._history_html()
@@ -926,9 +984,9 @@ class Simulation:
             print(f"Warning: multiple history files found, using {hist_files[0]}")
         hist_file = hist_files[0]
         try:
-            df = pd.read_csv(hist_file, delim_whitespace=True, comment='#')
+            df = pd.read_csv(hist_file, sep=r"\s+", comment="#", header=None)
         except Exception:
-            df = pd.read_csv(hist_file, sep=r"\s+", comment="#", engine="python")
+            df = pd.read_csv(hist_file, sep=r"\s+", comment="#", engine="python", header=None)
         with open(hist_file) as f:
             for line in f:
                 if line.startswith("# ["):
