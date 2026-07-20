@@ -338,8 +338,8 @@ class SpectrumOutputType(OutputType):
         btn_style = ("font-family:monospace;padding:3px 8px;margin:2px;"
                      "cursor:pointer;border:1px solid #ccc;border-radius:3px")
         buttons, plot_divs = [], []
-        for i, (name, label, files) in enumerate(outputs):
-            short = label.replace("spectrum [", "").rstrip("]")
+        for i, (name, out_label, files) in enumerate(outputs):
+            short = out_label.replace("spectrum [", "").rstrip("]")
             onclick = (
                 f"document.querySelectorAll('.{suid}-plot')"
                 f".forEach(function(e){{e.style.display='none'}});"
@@ -769,88 +769,61 @@ class Simulation:
             result[key] = OutputSeries(name, label, files, handler, self.directory)
         return result
 
-    def _history_html(self):
+    def _display_history_widget(self):
+        from IPython.display import display, HTML
+        import ipywidgets as widgets
+
         try:
             df = self.history
         except Exception as e:
-            return f"<em>Could not load history: {e}</em>"
+            display(HTML(f"<em>Could not load history: {e}</em>"))
+            return
+
+        cols = [c for c in df.columns if c not in ("time", "redshift")]
         has_redshift = "redshift" in df.columns
-        cols = [c for c in df.columns if c != "time"]
-        x_axes = ["time", "redshift"] if has_redshift else ["time"]
-        uid = f"hist_{abs(hash(self.directory))}"
+        x_options = ["time", "redshift"] if has_redshift else ["time"]
 
-        imgs = {}
-        for col in cols:
-            for x in x_axes:
-                fig = Figure(figsize=(6, 2.5))
-                ax = fig.add_subplot(111)
-                ax.plot(df[x], df[col])
-                ax.set_xlabel(x)
-                ax.set_ylabel(col)
-                fig.tight_layout()
-                buf = io.BytesIO()
-                fig.savefig(buf, format="png", dpi=100)
-                buf.seek(0)
-                imgs[(col, x)] = base64.b64encode(buf.read()).decode()
-
-        btn_style = ("font-family:monospace;padding:3px 8px;margin:2px;"
-                     "cursor:pointer;border:1px solid #ccc;border-radius:3px")
-        buttons = []
-        for i, col in enumerate(cols):
-            onclick = (
-                f"var ps=document.querySelectorAll('.{uid}-plot');"
-                f"ps.forEach(function(e){{e.style.display='none'}});"
-                f"var bs=document.querySelectorAll('.{uid}-btn');"
-                f"bs.forEach(function(e){{e.style.background='#f0f0f0';e.style.color='black';"
-                f"e.removeAttribute('data-active');}});"
-                f"var xaEl=document.getElementById('{uid}-xaxis');"
-                f"var xv=xaEl?xaEl.value:'time';"
-                f"document.getElementById('{uid}-'+xv+'-{col}').style.display='block';"
-                f"this.style.background='#333';this.style.color='white';"
-                f"this.setAttribute('data-active','1');"
-            )
-            bg = "#333;color:white" if i == 0 else "#f0f0f0"
-            active_attr = " data-active='1'" if i == 0 else ""
-            buttons.append(
-                f"<button class='{uid}-btn'{active_attr} onclick=\"{onclick}\""
-                f" style='{btn_style};background:{bg}'>{col}</button>"
-            )
-        images = "".join(
-            f"<div id='{uid}-{x}-{col}' class='{uid}-plot'"
-            f" style='display:{'block' if (i == 0 and x == 'time') else 'none'}'>"
-            f"<img src='data:image/png;base64,{imgs[(col, x)]}' style='max-width:600px'/></div>"
-            for i, col in enumerate(cols)
-            for x in x_axes
+        col_sel = widgets.ToggleButtons(
+            options=cols, value=cols[0],
+            style={"button_width": "auto"},
         )
+        x_sel = widgets.ToggleButtons(
+            options=x_options, value="time",
+            style={"button_width": "auto"},
+        ) if has_redshift else None
 
-        xaxis_selector = ""
-        if has_redshift:
-            xaxis_onchange = (
-                f"var xv=this.value;"
-                f"var active=null;"
-                f"document.querySelectorAll('.{uid}-btn').forEach(function(b)"
-                f"{{if(b.getAttribute('data-active')==='1')active=b;}});"
-                f"if(!active)return;"
-                f"var col=active.textContent;"
-                f"document.querySelectorAll('.{uid}-plot').forEach(function(e)"
-                f"{{e.style.display='none'}});"
-                f"document.getElementById('{uid}-'+xv+'-'+col).style.display='block';"
-            )
-            xaxis_selector = (
-                f"<select id='{uid}-xaxis' onchange=\"{xaxis_onchange}\" "
-                f"style='font-family:monospace;padding:3px 6px;margin:2px 12px 2px 0;"
-                f"border:1px solid #ccc;border-radius:3px'>"
-                f"<option value='time' selected>vs time</option>"
-                f"<option value='redshift'>vs redshift</option>"
-                f"</select>"
-            )
+        plot_out = widgets.Output()
 
-        return (
-            f"<div>"
-            f"<div style='margin-bottom:6px'>{xaxis_selector}{''.join(buttons)}</div>"
-            f"<div>{images}</div>"
-            f"</div>"
-        )
+        def render(col, x):
+            fig = Figure(figsize=(6, 2.5))
+            ax = fig.add_subplot(111)
+            ax.plot(df[x], df[col])
+            ax.set_xlabel(x)
+            ax.set_ylabel(col)
+            fig.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=100)
+            buf.seek(0)
+            return (f"<img src='data:image/png;base64,"
+                    f"{base64.b64encode(buf.read()).decode()}'"
+                    f" style='max-width:600px'/>")
+
+        def update(change=None):
+            x = x_sel.value if x_sel else "time"
+            plot_out.clear_output(wait=True)
+            with plot_out:
+                display(HTML(render(col_sel.value, x)))
+
+        col_sel.observe(update, names="value")
+        if x_sel:
+            x_sel.observe(update, names="value")
+
+        update()
+
+        hdr = "font-family:monospace;font-weight:bold;margin:10px 0 4px 0;color:#333"
+        display(HTML(f"<div style='{hdr}'>History</div>"))
+        controls = [col_sel] + ([x_sel] if x_sel else [])
+        display(widgets.VBox(controls + [plot_out]))
 
     def _elapsed_time(self):
         try:
@@ -918,7 +891,7 @@ class Simulation:
 
         hdr = "font-family:monospace;font-weight:bold;margin:10px 0 4px 0;color:#333"
         display(HTML(self._info_html()))
-        display(HTML(f"<div style='{hdr}'>History</div>" + self._history_html()))
+        self._display_history_widget()
 
         all_outputs = self._output_info()
         outputs_by_type = {}
@@ -955,7 +928,27 @@ class Simulation:
         display(vbox)
 
     def _repr_html_(self):
-        return self._info_html() + self._history_html()
+        try:
+            df = self.history
+            cols = [c for c in df.columns if c not in ("time", "redshift")]
+            fig = Figure(figsize=(6, 2.5))
+            ax = fig.add_subplot(111)
+            if cols:
+                ax.plot(df["time"], df[cols[0]])
+                ax.set_xlabel("time")
+                ax.set_ylabel(cols[0])
+            fig.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=100)
+            buf.seek(0)
+            hist_html = (
+                f"<img src='data:image/png;base64,"
+                f"{base64.b64encode(buf.read()).decode()}'"
+                f" style='max-width:600px'/>"
+            )
+        except Exception as e:
+            hist_html = f"<em>Could not load history: {e}</em>"
+        return self._info_html() + hist_html
 
     def __repr__(self):
         problem_id = self.config.get("job", {}).get("problem_id", "—")
