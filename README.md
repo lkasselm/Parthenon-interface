@@ -4,9 +4,18 @@ A Jupyter notebook interface for exploring [AthenaPK](https://github.com/parthen
 
 ## Setup
 
+Install once (editable, so local edits are picked up without reinstalling):
+
+```bash
+pip install -e /path/to/interface --no-deps
+```
+
+`--no-deps` avoids pip clobbering conda-installed packages like `yt` and
+`openpmd-api`; see [Dependencies](#dependencies) below.
+
+Then, from any directory:
+
 ```python
-import sys
-sys.path.insert(0, "/path/to/interface")
 from interface import Simulation
 ```
 

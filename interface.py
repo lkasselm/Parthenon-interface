@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import glob
 import os
-import io_utils
+from . import io_utils
 import matplotlib
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
