@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parthenon-interface"
+version = "0.1.0"
+description = "A Jupyter notebook interface for exploring AthenaPK / Parthenon simulation output"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "ipywidgets",
+    "h5py",
+    "openpmd-api",
+    "yt",
+]
+
+[tool.setuptools]
+packages = ["interface"]
+package-dir = {"interface" = "."}
