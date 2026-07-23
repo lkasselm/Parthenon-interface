@@ -394,6 +394,32 @@ class SpectrumOutputType(OutputType):
         )
 
 
+def _opmd_field_map(it, opmd):
+    """Map display label -> (mesh_name, component) for every field in an iteration.
+
+    Parthenon writes one openPMD mesh per (packed-variable, component) pair, so a
+    scalar field like "density" ends up as its own mesh whose only record component
+    is the generic openPMD SCALAR sentinel (not the field name). Older writers instead
+    grouped everything under one mesh with the real field names as components. Handle
+    both: use the mesh's own name as the label when its only component is the SCALAR
+    sentinel, otherwise use the component name (which is already the real field name
+    unless it's a generic vector component, in which case prefix it with the mesh name).
+    """
+    scalar = opmd.Mesh_Record_Component.SCALAR
+    field_map = {}
+    for mesh_name in it.meshes:
+        mesh = it.meshes[mesh_name]
+        comps = list(mesh)
+        if comps == [scalar]:
+            field_map[mesh_name] = (mesh_name, scalar)
+        else:
+            for comp in comps:
+                comp_str = str(comp)
+                label = f"{mesh_name}_{comp_str}" if comp_str in ("x", "y", "z") else comp_str
+                field_map[label] = (mesh_name, comp)
+    return field_map
+
+
 class OpenPMDOutputType(OutputType):
     file_type = "openpmd"
     accordion_title = "Slices"
@@ -427,12 +453,13 @@ class OpenPMDOutputType(OutputType):
                 s = opmd.Series(first_path, opmd.Access.read_only)
                 it_num = next(iter(s.iterations))
                 it = s.iterations[it_num]
-                mesh_name = list(it.meshes)[0]
-                fields = list(it.meshes[mesh_name])
-                mesh0 = it.meshes[mesh_name]
+                field_map = _opmd_field_map(it, opmd)
+                fields = list(field_map)
+                mesh0_name, comp0 = field_map[fields[0]]
+                mesh0 = it.meshes[mesh0_name]
                 dx = list(mesh0.grid_spacing)
                 x0 = list(mesh0.grid_global_offset)
-                shape = mesh0[fields[0]].shape
+                shape = mesh0[comp0].shape
                 extent = [x0[1], x0[1] + dx[1]*shape[1],
                           x0[0], x0[0] + dx[0]*shape[0]]
                 s.close()
@@ -456,8 +483,9 @@ class OpenPMDOutputType(OutputType):
                     s = opmd.Series(fpath, opmd.Access.read_only)
                     it_num = next(iter(s.iterations))
                     it = s.iterations[it_num]
+                    mesh_name, comp = _opmd_field_map(it, opmd)[field]
                     mesh = it.meshes[mesh_name]
-                    chunk = mesh[field].load_chunk()
+                    chunk = mesh[comp].load_chunk()
                     s.flush()
                     data = chunk.copy()
                     s.close()
@@ -524,14 +552,15 @@ class OpenPMDOutputType(OutputType):
         s = opmd.Series(path, opmd.Access.read_only)
         it_num = next(iter(s.iterations))
         it = s.iterations[it_num]
-        mesh_name = list(it.meshes)[0]
-        mesh = it.meshes[mesh_name]
-        fields = list(mesh)
-        dx = list(mesh.grid_spacing)
-        x0 = list(mesh.grid_global_offset)
-        shape = mesh[fields[0]].shape
+        field_map = _opmd_field_map(it, opmd)
+        fields = list(field_map)
+        mesh0_name, comp0 = field_map[fields[0]]
+        mesh0 = it.meshes[mesh0_name]
+        dx = list(mesh0.grid_spacing)
+        x0 = list(mesh0.grid_global_offset)
+        shape = mesh0[comp0].shape
         extent = [x0[1], x0[1] + dx[1]*shape[1], x0[0], x0[0] + dx[0]*shape[0]]
-        chunks = {f: mesh[f].load_chunk() for f in fields}
+        chunks = {f: it.meshes[mname][comp].load_chunk() for f, (mname, comp) in field_map.items()}
         s.flush()
         data = {f: chunks[f].copy() for f in fields}
         s.close()
@@ -545,8 +574,7 @@ class OpenPMDOutputType(OutputType):
         s = opmd.Series(path, opmd.Access.read_only)
         it_num = next(iter(s.iterations))
         it = s.iterations[it_num]
-        mesh_name = list(it.meshes)[0]
-        fields = list(it.meshes[mesh_name])
+        fields = list(_opmd_field_map(it, opmd))
         s.close()
         return fields
 
@@ -684,6 +712,8 @@ class Simulation:
 
     def __init__(self, directory, pattern="parthenon.prim.*.phdf"):
         self.directory = directory
+        if not os.path.isdir(directory):
+            raise NotADirectoryError(f"Directory not found: {directory}")
         input_files = glob.glob(os.path.join(directory, "*.in"))
         if not input_files:
             raise FileNotFoundError(f"No input file (*.in) found in directory {directory}")
