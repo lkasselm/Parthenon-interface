@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: parthenon-interface
+Version: 0.1.0
+Summary: A Jupyter notebook interface for exploring AthenaPK / Parthenon simulation output
+Requires-Python: >=3.10
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: matplotlib
+Requires-Dist: ipywidgets
+Requires-Dist: h5py
+Requires-Dist: openpmd-api
+Requires-Dist: yt

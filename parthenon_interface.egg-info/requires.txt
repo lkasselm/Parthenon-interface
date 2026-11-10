@@ -1,0 +1,7 @@
+numpy
+pandas
+matplotlib
+ipywidgets
+h5py
+openpmd-api
+yt
