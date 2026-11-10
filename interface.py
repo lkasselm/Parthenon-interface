@@ -1,6 +1,7 @@
 import re
 import io
 import base64
+from collections import defaultdict
 
 _SPINNER_HTML = """
 <style>@keyframes _spin{to{transform:rotate(360deg)}}</style>
@@ -149,6 +150,183 @@ class FieldFrame:
         return f"FieldFrame(field={self.field!r}, t={t_str}, shape={self._array.shape})"
 
 
+class EnergyTransferResult:
+    """
+    One energy_transfer output, as written by the C++ WriteResult: shell-
+    transfer matrices (`.terms`, plus the donor/mediator/receiver binning
+    that produced them), spectra (`.spectra`), or both -- WriteResult's two
+    parts are each optional (see io_utils.parse_energy_transfer_file for the
+    on-disk format this wraps).
+
+    Read directly from a file, no Simulation needed:
+
+        result = EnergyTransferResult.from_file("mediator_q23_output.00002.bp")
+
+    Or discovered from a Simulation (see Simulation.energy_transfer_outputs):
+
+        result = sim.energy_transfer_outputs()["mediator_q23_output"][0].data
+
+    Each entry in `.terms` is an array shaped (n_receiver, n_mediator,
+    n_donor) -- receiver (K) outermost/rows, donor (Q) innermost/cols,
+    mediator in between, matching this package's existing (K, Q)
+    shell-matrix convention (see io_utils.dict_to_array) with the mediator
+    axis sandwiched in. An axis energy_transfer didn't resolve (collapsed to
+    the whole domain) has length 1 -- index/squeeze it out if not needed,
+    e.g. `result["UUA"][:, 0, :]` for the plain (K, Q) matrix when the
+    mediator wasn't decomposed.
+
+    Each entry in `.spectra` is the raw {"pow_sum", "k_sum", "count_sum"}
+    triple per unit-width |k| bin; `result.spectrum("spec_U")` returns it as
+    a DataFrame with the bin-mean wavenumber k = k_sum / count_sum added.
+    `result[name]` looks up a term first, then a spectrum.
+    """
+
+    def __init__(self, terms, spectra, donor_edges, mediator_edges, receiver_edges,
+                 donor_binning, mediator_binning, receiver_binning, time=None):
+        self.terms = terms
+        self.spectra = spectra
+        # Edges/binning are None for a spectra-only output.
+        self.donor_edges = None if donor_edges is None else np.asarray(donor_edges)
+        self.mediator_edges = None if mediator_edges is None else np.asarray(mediator_edges)
+        self.receiver_edges = None if receiver_edges is None else np.asarray(receiver_edges)
+        self.donor_binning = donor_binning
+        self.mediator_binning = mediator_binning
+        self.receiver_binning = receiver_binning
+        self.time = time
+
+    @classmethod
+    def from_file(cls, path):
+        """Read an energy_transfer .bp output directly -- no Simulation needed."""
+        return cls(**io_utils.parse_energy_transfer_file(path))
+
+    def __getitem__(self, name):
+        if name in self.terms:
+            return self.terms[name]
+        if name in self.spectra:
+            return self.spectrum(name)
+        raise KeyError(f"{name!r} is neither a term nor a spectrum in this output "
+                       f"(terms: {list(self.terms)}, spectra: {list(self.spectra)})")
+
+    def __contains__(self, name):
+        return name in self.terms or name in self.spectra
+
+    def __iter__(self):
+        yield from self.terms
+        yield from self.spectra
+
+    def spectrum(self, name):
+        """
+        Spectrum `name` as a DataFrame with columns pow_sum, k_sum, count_sum
+        and k (= k_sum / count_sum, the bin-mean wavenumber; NaN for an empty
+        bin). Index is the bin number.
+        """
+        raw = self.spectra[name]
+        df = pd.DataFrame({key: np.asarray(raw[key]) for key in ("pow_sum", "k_sum", "count_sum")})
+        with np.errstate(invalid="ignore", divide="ignore"):
+            df["k"] = np.where(df["count_sum"] > 0, df["k_sum"] / df["count_sum"], np.nan)
+        return df
+
+    @staticmethod
+    def _n_shells(edges):
+        return None if edges is None else len(edges) - 1
+
+    @property
+    def n_donor(self):
+        return self._n_shells(self.donor_edges)
+
+    @property
+    def n_mediator(self):
+        return self._n_shells(self.mediator_edges)
+
+    @property
+    def n_receiver(self):
+        return self._n_shells(self.receiver_edges)
+
+    @staticmethod
+    def _edge_labels(edges):
+        return [f"{lo:.2f}-{hi:.2f}" for lo, hi in zip(edges[:-1], edges[1:])]
+
+    @staticmethod
+    def _fig_to_img(fig, max_width):
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=100)
+        buf.seek(0)
+        return (f"<img src='data:image/png;base64,"
+                f"{base64.b64encode(buf.read()).decode()}'"
+                f" style='max-width:{max_width}px'/>")
+
+    def _terms_html(self):
+        names = list(self.terms)
+        ncols = min(4, len(names))
+        nrows = -(-len(names) // ncols)
+        fig = Figure(figsize=(3.2 * ncols, 2.8 * nrows))
+        axes = fig.subplots(nrows, ncols, squeeze=False)
+        donor_labels = self._edge_labels(self.donor_edges)
+        receiver_labels = self._edge_labels(self.receiver_edges)
+        for i, name in enumerate(names):
+            ax = axes[i // ncols][i % ncols]
+            # Sum over the mediator axis for this at-a-glance grid -- index
+            # .terms[name] directly to look at individual mediator shells.
+            summed = self.terms[name].sum(axis=1)
+            scale = np.max(np.abs(summed)) or 1.0
+            im = ax.imshow(summed, cmap="RdBu_r", vmin=-scale, vmax=scale, origin="lower")
+            ax.set_title(name, fontsize=9)
+            if len(donor_labels) <= 12:
+                ax.set_xticks(range(len(donor_labels)))
+                ax.set_xticklabels(donor_labels, rotation=90, fontsize=5)
+                ax.set_yticks(range(len(receiver_labels)))
+                ax.set_yticklabels(receiver_labels, fontsize=5)
+            else:
+                ax.set_xticks([])
+                ax.set_yticks([])
+            fig.colorbar(im, ax=ax, shrink=0.8)
+        for j in range(len(names), nrows * ncols):
+            axes[j // ncols][j % ncols].axis("off")
+        t_str = f", t = {self.time:.4g}" if self.time is not None else ""
+        fig.suptitle(f"energy_transfer{t_str} (summed over {self.n_mediator} mediator shell(s))")
+        return self._fig_to_img(fig, 900)
+
+    def _spectra_html(self):
+        fig = Figure(figsize=(6, 3.5))
+        ax = fig.add_subplot(111)
+        y_max = None
+        for name in self.spectra:
+            df = self.spectrum(name)
+            ax.loglog(df["k"], df["pow_sum"], linewidth=0.8, label=name)
+            positive = df["pow_sum"][df["pow_sum"] > 0]
+            if not positive.empty and (y_max is None or positive.max() > y_max):
+                y_max = positive.max()
+        if y_max is not None and np.isfinite(y_max):
+            log_max = np.log10(y_max)
+            ax.set_ylim(10 ** (log_max - 8), 10 ** (log_max + 1))
+        ax.set_xlabel("k (bin mean)")
+        ax.set_ylabel("pow_sum")
+        ax.legend(fontsize=6)
+        t_str = f"t = {self.time:.4g}" if self.time is not None else ""
+        ax.set_title(f"energy_transfer spectra {t_str}".strip(), fontsize=9)
+        return self._fig_to_img(fig, 600)
+
+    def _repr_html_(self):
+        parts = []
+        if self.terms:
+            parts.append(self._terms_html())
+        if self.spectra:
+            parts.append(self._spectra_html())
+        if not parts:
+            return "<em>No terms or spectra in this energy_transfer output.</em>"
+        return "<br/>".join(parts)
+
+    def __repr__(self):
+        t_str = f"t={self.time:.4g}" if self.time is not None else "t=—"
+        shape_str = ""
+        if self.terms:
+            shape_str = (f", shape=(n_receiver={self.n_receiver}, n_mediator={self.n_mediator}, "
+                         f"n_donor={self.n_donor})")
+        return (f"EnergyTransferResult({t_str}, terms={list(self.terms)}, "
+                f"spectra={list(self.spectra)}{shape_str})")
+
+
 class OutputFrame:
     """A single timestep of one output series."""
 
@@ -289,7 +467,11 @@ class SpectrumOutputType(OutputType):
         self._cache = {}
 
     def file_pattern(self, n, cfg):
-        output_label = cfg.get("output_label", f"out{n}")
+        output_label = cfg.get("output_label")
+        if output_label is None:
+            # Older builds without output_label write parthenon.out<n>.<NNNNN>.spc
+            return (f"parthenon.out{n}.*{_EXT_MAP['spectrum']}",
+                    f"spectrum [out{n}]")
         return (f"parthenon.{output_label}.out{n}.*{_EXT_MAP['spectrum']}",
                 f"spectrum [{output_label}]")
 
@@ -646,6 +828,46 @@ class HDF5OutputType(OutputType):
         return None
 
 
+class EnergyTransferOutputType(OutputType):
+    """
+    Handler for energy_transfer's own .bp outputs (see EnergyTransferResult
+    / io_utils.parse_energy_transfer_file) -- shell transfers, spectra, or
+    both per file.
+
+    Unlike the other handlers, this isn't discovered via the usual
+    <parthenon/outputN> config scan -- the files come either from the
+    offline driver (configured through its own <energy_transfer> block,
+    frequently with output_file/output_number overridden at invocation
+    time) or from an application calling WriteResult in-situ (e.g. from
+    UserWorkBeforeOutput), neither of which an input deck reliably
+    describes. Use Simulation.energy_transfer_outputs() to
+    discover these from a Simulation (it scans the directory directly
+    rather than reading a config section), or EnergyTransferResult.from_file(path)
+    to read one standalone, no Simulation involved at all.
+    """
+    file_type = "energy_transfer"
+    accordion_title = "Energy transfer"
+    show_in_file_list = False  # not part of the <parthenon/outputN> file list at all
+
+    def file_pattern(self, n, cfg):
+        raise NotImplementedError(
+            "energy_transfer isn't a <parthenon/outputN> block -- use "
+            "Simulation.energy_transfer_outputs() instead."
+        )
+
+    def read_data(self, path):
+        return EnergyTransferResult.from_file(path)
+
+    def frame_repr_html(self, frame):
+        return frame.data._repr_html_()
+
+    def get_frame_field(self, frame, key):
+        return frame.data[key]
+
+    def build_accordion(self, outputs, directory):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # SimulationConfig
 # ---------------------------------------------------------------------------
@@ -797,6 +1019,51 @@ class Simulation:
             handler = handler_map.get(file_type)
             key = label.split("[")[-1].rstrip("]") if "[" in label else name
             result[key] = OutputSeries(name, label, files, handler, self.directory)
+        return result
+
+    def energy_transfer_outputs(self, pattern="*.bp"):
+        """
+        Discover energy_transfer .bp outputs in this simulation's directory,
+        grouped into an OutputsCollection keyed by their base filename (the
+        part before the .<NNNNN>.bp iteration suffix).
+
+        Unlike `outputs` above, this isn't read off a <parthenon/outputN>
+        config section -- the files come from the offline driver (its own
+        <energy_transfer> block, output_file/output_number commonly
+        overridden at invocation time) or from in-situ WriteResult calls,
+        so the input deck alone doesn't reliably say what got written.
+        Instead this globs `pattern` in the simulation directory and keeps
+        whichever matches energy_transfer::WriteResult wrote -- recognized
+        by its donor_shell_edges attribute or a *_pow_sum spectrum record
+        (see io_utils.energy_transfer_file_info), which also distinguishes
+        them from an ordinary Parthenon openpmd output sharing the same .bp
+        extension (e.g. a slice).
+        """
+        handler = next(
+            (h for h in self.output_types if isinstance(h, EnergyTransferOutputType)), None
+        )
+        if handler is None:
+            handler = EnergyTransferOutputType()
+
+        groups = defaultdict(list)
+        for path in sorted(glob.glob(os.path.join(self.directory, pattern))):
+            fname = os.path.basename(path)
+            is_et, time = io_utils.energy_transfer_file_info(path)
+            if not is_et:
+                continue
+            m = re.match(r"^(.*)\.(\d+)\.bp$", fname)
+            if m:
+                base, idx = m.group(1), int(m.group(2))
+            else:
+                base, idx = (fname[:-3] if fname.endswith(".bp") else fname), None
+            groups[base].append((idx, time, fname))
+
+        result = OutputsCollection()
+        for base, files in groups.items():
+            files.sort(key=lambda f: (f[0] is None, f[0]))
+            result[base] = OutputSeries(
+                base, f"energy_transfer [{base}]", files, handler, self.directory
+            )
         return result
 
     def _display_history_widget(self):
