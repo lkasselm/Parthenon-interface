@@ -43,9 +43,27 @@ Displaying `sim` in a notebook renders an interactive overview:
 ## History
 
 ```python
-df = sim.history   # pandas DataFrame, columns = all history quantities + "time"
-df["ME"]           # magnetic energy time series
+h = sim.history    # History: DataFrame-like wrapper, columns = all history quantities + "time"
+h["ME"]            # magnetic energy time series (pandas Series)
+h.df               # the underlying pandas DataFrame
 ```
+
+If `KE` and/or `ME` are present, `v_rms` and `B_rms` columns are added
+automatically (`E = 1/2 X_rms² V`, with `V` the domain volume from
+`parthenon/mesh`). If that fails for any reason the columns are just omitted.
+
+Look up one quantity at a given value of another with `at(quantity, by, value)`:
+
+```python
+h.at("KE", "time", 5.0)                       # linear interpolation
+h.at("KE", "time", 5.0, method="nearest")     # closest row instead
+h.at("time", "KE", 1e3)                       # reverse lookup: when does KE reach 1e3?
+h.at(["KE", "ME"], "redshift", 2.0)           # several quantities -> Series
+h.at("KE", "time", [1, 2, 3])                 # array of values -> array
+```
+
+`by` can be any column. Interpolation uses the first point where `by` crosses
+`value`, and raises `ValueError` if the value is never reached.
 
 ---
 
@@ -182,6 +200,55 @@ To apply a custom type to all future simulations, append to the class-level list
 ```python
 Simulation._default_output_type_classes.append(MyOutputType)
 ```
+
+---
+
+## Adding problem-specific routines
+
+`Simulation` is assembled from two parts (see `__init__.py`):
+
+```python
+class Simulation(PhysicsMixin, BaseSimulation): ...
+```
+
+- `BaseSimulation` (`interface.py`) is the problem-agnostic core: config, history, outputs, display.
+- `PhysicsMixin` (`physics.py`) holds problem-specific methods and derived quantities.
+
+The mixin never imports the core; it just uses the core API through `self`
+(`self.history`, `self.config`, `self.outputs`, ...). Since it comes first in the
+method resolution order, it can both add methods and override core hooks.
+
+To add a routine, add a method to `PhysicsMixin` in `physics.py`:
+
+```python
+class PhysicsMixin:
+    def plot_my_quantity(self, ax=None):
+        import matplotlib.pyplot as plt
+        h = self.history
+        if ax is None:
+            _, ax = plt.subplots()
+        ax.plot(h["time"], h["KE"] / h["ME"])
+        return ax
+```
+
+```python
+sim.plot_my_quantity()
+```
+
+To change core behaviour without touching the core, override a hook. Currently
+available: `_postprocess_history(df)` (called when building `sim.history`; must
+return the DataFrame). The mixin uses it to add `v_rms` / `B_rms`:
+
+```python
+def _postprocess_history(self, df):
+    df = super()._postprocess_history(df)
+    df["my_column"] = ...
+    return df
+```
+
+Keep anything that isn't problem-specific in the core. For a different problem
+or code, write another mixin and combine it in `__init__.py`
+(`class Simulation(MyMixin, BaseSimulation)`).
 
 ---
 

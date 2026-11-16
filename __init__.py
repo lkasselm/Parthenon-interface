@@ -1,5 +1,12 @@
 from .interface import *
 from .interface import BaseSimulation
+from .output_types import (
+    YTFieldFrame,
+    FieldFrame,
+    EnergyTransferResult,
+    OutputFrame,
+    OutputType,
+)
 from .physics import PhysicsMixin
 
 
