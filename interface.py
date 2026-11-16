@@ -130,7 +130,7 @@ class SimulationConfig(dict):
 # Simulation
 # ---------------------------------------------------------------------------
 
-class Simulation:
+class BaseSimulation:
     """
     Interface for analyzing Parthenon simulation data.
 
@@ -497,4 +497,20 @@ class Simulation:
                     columns = [e.split("=")[1].strip() for e in line.split() if "=" in e]
                     break
         df.columns = columns
+        df = self._postprocess_history(df)
         return History(df)
+
+    def _domain_volume(self):
+        mesh = self.config["parthenon/mesh"]
+        vol = 1.0
+        for i in (1, 2, 3):
+            vol *= float(mesh[f"x{i}max"]) - float(mesh[f"x{i}min"])
+        return vol
+
+    def _postprocess_history(self, df):
+        """Hook to modify the history DataFrame (e.g. add derived columns).
+
+        No-op in the core; override (e.g. in a physics mixin) to customise.
+        Must return the DataFrame.
+        """
+        return df
