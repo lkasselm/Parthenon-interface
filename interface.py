@@ -23,6 +23,7 @@ _EXT_MAP = {
     "rst":      ".rhdf",
     "openpmd":  ".bp",
     "spectrum": ".spc",
+    "histogram": ".hdf",
 }
 
 
@@ -77,6 +78,7 @@ from .output_types import (
     OutputsCollection,
     OutputSeries,
     SpectrumOutputType,
+    HistogramOutputType,
     OpenPMDOutputType,
     HDF5OutputType,
     EnergyTransferOutputType,
@@ -142,6 +144,7 @@ class BaseSimulation:
 
     _default_output_type_classes = [
         SpectrumOutputType,
+        HistogramOutputType,
         OpenPMDOutputType,
         HDF5OutputType,
     ]

@@ -51,6 +51,10 @@ components = 0
 output_label = spc_rho
 dt = 0.05
 
+<parthenon/output8>
+file_type = histogram
+dt = 1.0
+
 <parthenon/time>
 cfl = 0.3               # The Courant, Friedrichs, & Lewy (CFL) Number
 nlim       = 100000     # cycle limit

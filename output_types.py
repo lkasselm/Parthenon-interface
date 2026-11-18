@@ -620,6 +620,76 @@ class SpectrumOutputType(OutputType):
         )
 
 
+class HistogramOutputType(OutputType):
+    """Parthenon histogram outputs (``parthenon.out<n>.histograms.<NNNNN>.hdf``).
+
+    ``frame.data`` is a dict mapping histogram name -> dict with keys
+    ``data``, ``x_edges`` (and ``y_edges`` for 2D), ``x_centers``, plus the
+    HDF5 attributes (``x_var_name``, ``binned_var_name``, ...). ``frame[name]``
+    returns that single histogram's dict.
+    """
+    file_type = "histogram"
+    accordion_title = "Histograms"
+
+    def file_pattern(self, n, cfg):
+        return (f"parthenon.out{n}.histograms.*{_EXT_MAP['histogram']}",
+                f"histogram [out{n}]")
+
+    def read_data(self, path):
+        import h5py
+        result = {}
+        with h5py.File(path, "r") as f:
+            names = [n.decode() if isinstance(n, bytes) else str(n)
+                     for n in f["Info"].attrs.get("hist_names", list(f.keys()))]
+            for name in names:
+                if name not in f:
+                    continue
+                g = f[name]
+                h = {k: (v.decode() if isinstance(v, bytes) else
+                         v.item() if hasattr(v, "item") else v)
+                     for k, v in g.attrs.items()}
+                h["data"] = g["data"][()]
+                for ax in ("x", "y"):
+                    key = f"{ax}_edges"
+                    if key in g:
+                        h[key] = g[key][()]
+                        h[f"{ax}_centers"] = 0.5 * (h[key][1:] + h[key][:-1])
+                result[name] = h
+        return result
+
+    def _plot(self, h, name, ax):
+        if h.get("ndim", 1) == 2 and "y_edges" in h:
+            im = ax.pcolormesh(h["x_edges"], h["y_edges"], h["data"].T, cmap="viridis")
+            ax.figure.colorbar(im, ax=ax)
+            ax.set_ylabel(h.get("y_var_name", "y"))
+        else:
+            ax.stairs(h["data"], h["x_edges"])
+            ax.set_ylabel(h.get("binned_var_name", "count"))
+        ax.set_xlabel(h.get("x_var_name", "x"))
+        ax.set_title(name)
+
+    def frame_repr_html(self, frame):
+        hists = frame.data
+        n = max(len(hists), 1)
+        fig = Figure(figsize=(4.5 * n, 3.2))
+        for i, (name, h) in enumerate(hists.items()):
+            self._plot(h, name, fig.add_subplot(1, n, i + 1))
+        t_str = f"{frame.time:.4g}" if frame.time is not None else "—"
+        fig.suptitle(f"t = {t_str}")
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=100)
+        buf.seek(0)
+        return (f"<img src='data:image/png;base64,"
+                f"{base64.b64encode(buf.read()).decode()}'/>")
+
+    def get_frame_field(self, frame, key):
+        return frame.data[key]
+
+    def build_accordion(self, outputs, directory):
+        return None
+
+
 def _opmd_field_map(it, opmd):
     """Map display label -> (mesh_name, component) for every field in an iteration.
 

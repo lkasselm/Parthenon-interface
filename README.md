@@ -101,6 +101,17 @@ frame.data         # pandas DataFrame with columns: Bin, En_sum, K_sum, Count
 frame              # displays a log-log plot (En_sum vs Bin) in Jupyter
 ```
 
+### Histograms (`.hdf`)
+
+```python
+series = sim.outputs["out8"]    # <parthenon/output8> with file_type = histogram
+frame  = series.at(t=0)
+
+frame                    # plots all histograms in the file
+frame.data               # dict: name -> {"data", "x_edges", "x_centers", ...attrs}
+frame["rho_vol"]["data"] # counts of a single histogram
+```
+
 ### OpenPMD slices (`.bp`)
 
 ```python
